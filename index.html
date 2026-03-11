@@ -368,11 +368,12 @@ button{font-family:'Inter',sans-serif;}
 }
 .ms-action:hover{border-color:var(--blue);color:var(--blue);background:var(--blue-dim);}
 
-.ms-list{overflow-y:auto;flex:1;}
+.ms-list{overflow-y:auto;flex:1;max-height:240px;}
 .ms-opt{
   display:flex;align-items:center;gap:8px;
-  padding:6px 10px;cursor:pointer;
+  padding:0 10px;cursor:pointer;
   transition:background var(--tr);font-size:12px;
+  height:30px;box-sizing:border-box;flex-shrink:0;
 }
 .ms-opt:hover{background:var(--s2);}
 .ms-opt.sel{background:rgba(59,130,246,.05);}
@@ -929,135 +930,180 @@ async function initDash(fname){
 }
 
 /* ══════════ FILTER TYPE ══════════
-   ≤400 unique values → multi-select dropdown  (covers most NPTEL columns)
-   >400 → text search
+   ALL columns → multi-select with virtual scroll
+   (handles 1, 10, 400, 1000, 250000 unique values equally)
 ══════════════════════════════════ */
-function getFilterMode(col){
-  return colSets[col].length<=400?'multi':'text';
-}
+function getFilterMode(){ return 'multi'; }
 
 /* ══════════ BUILD FILTER UI ══════════ */
 function buildFilterUI(){
   const grid=$('fg');grid.innerHTML='';
   const frag=document.createDocumentFragment();
   cols.forEach(col=>{
-    const mode=getFilterMode(col);
-    fmap[col]={mode,sel:new Set(),txt:''};
+    fmap[col]={mode:'multi',sel:new Set(),txt:''};
     const item=document.createElement('div');item.className='fg-col';
     const lbl=document.createElement('div');lbl.className='fg-label';
     lbl.innerHTML=`<span style="overflow:hidden;text-overflow:ellipsis">${esc(col)}</span><span class="fg-cnt">${colSets[col].length}</span>`;
     item.appendChild(lbl);
-    if(mode==='multi'){
-      item.appendChild(makeMultiSelect(col,colSets[col]));
-    } else {
-      const inp=document.createElement('input');
-      inp.className='fg-text';inp.type='text';inp.id='ft_'+col;
-      inp.placeholder=`Search ${colSets[col].length} values…`;
-      inp.addEventListener('input',()=>{
-        fmap[col].txt=inp.value;
-        inp.classList.toggle('active',!!inp.value);
-        schedFilter();
-      });
-      item.appendChild(inp);
-    }
+    item.appendChild(makeMultiSelect(col,colSets[col]));
     frag.appendChild(item);
   });
   grid.appendChild(frag);
 }
 
-/* ══════════ MULTI-SELECT FACTORY ══════════ */
-function makeMultiSelect(col,vals){
-  const outer=document.createElement('div');outer.className='ms-outer';
-  const state={open:false,q:''};
+/* ══════════ MULTI-SELECT — CHUNKED INFINITE SCROLL ══════════
+   Renders 80 items at a time, loads more as user scrolls.
+   Works perfectly for 1 → 250,000 unique values.
+══════════════════════════════════════════════════════════════ */
+const BATCH = 80;
 
-  /* ── Trigger ── */
-  const trigger=document.createElement('div');
-  trigger.className='ms-trigger';trigger.id='ms_'+col;
-  trigger.tabIndex=0;
-  setTriggerDisplay(trigger,col);
+function makeMultiSelect(col, vals){
+  const outer = document.createElement('div'); outer.className = 'ms-outer';
+  const state = { open:false, q:'', filtered:vals.slice(), rendered:0 };
 
-  /* ── Panel ── */
-  const panel=document.createElement('div');panel.className='ms-panel';
+  /* Trigger */
+  const trigger = document.createElement('div');
+  trigger.className = 'ms-trigger'; trigger.id = 'ms_'+col; trigger.tabIndex = 0;
+  setTriggerDisplay(trigger, col);
 
-  /* Search row */
-  const sr=document.createElement('div');sr.className='ms-search-row';
-  sr.innerHTML=`<svg class="ms-search-icon" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`;
-  const si=document.createElement('input');si.className='ms-search';si.placeholder='Search…';
-  sr.appendChild(si);panel.appendChild(sr);
+  /* Panel */
+  const panel = document.createElement('div'); panel.className = 'ms-panel';
 
-  /* Actions */
-  const ar=document.createElement('div');ar.className='ms-actions-row';
-  const selAll=document.createElement('button');selAll.className='ms-action';selAll.textContent='All';
-  const clrAll=document.createElement('button');clrAll.className='ms-action';clrAll.textContent='None';
-  ar.appendChild(selAll);ar.appendChild(clrAll);panel.appendChild(ar);
+  /* Search */
+  const sr = document.createElement('div'); sr.className = 'ms-search-row';
+  sr.innerHTML = `<svg class="ms-search-icon" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`;
+  const si = document.createElement('input'); si.className = 'ms-search'; si.placeholder = 'Search options…';
+  sr.appendChild(si); panel.appendChild(sr);
 
-  /* List */
-  const list=document.createElement('div');list.className='ms-list';
+  /* Actions + count */
+  const ar = document.createElement('div'); ar.className = 'ms-actions-row';
+  const selAll = document.createElement('button'); selAll.className = 'ms-action'; selAll.textContent = 'All';
+  const clrAll = document.createElement('button'); clrAll.className = 'ms-action'; clrAll.textContent = 'None';
+  const countLbl = document.createElement('span');
+  countLbl.style.cssText = 'font-size:10px;color:var(--text3);margin-left:auto;white-space:nowrap;font-family:"JetBrains Mono",monospace;';
+  ar.appendChild(selAll); ar.appendChild(clrAll); ar.appendChild(countLbl);
+  panel.appendChild(ar);
+
+  /* Scrollable list */
+  const list = document.createElement('div'); list.className = 'ms-list';
   panel.appendChild(list);
 
-  /* render list */
-  function renderList(){
-    const q=state.q.toLowerCase();
-    const filtered=q?vals.filter(v=>v.toLowerCase().includes(q)):vals;
-    if(!filtered.length){list.innerHTML='<div class="ms-empty">No options</div>';return;}
-    const f=document.createDocumentFragment();
-    filtered.forEach(v=>{
-      const opt=document.createElement('div');
-      const isSel=fmap[col].sel.has(v);
-      opt.className='ms-opt'+(isSel?' sel':'');
-      opt.innerHTML=`<div class="ms-checkbox"><svg class="ms-check-svg" width="9" height="9" fill="none" stroke="#fff" stroke-width="2.5" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div><span class="ms-opt-text" title="${esc(v)}">${esc(v)}</span>`;
-      opt.addEventListener('mousedown',e=>{
-        e.preventDefault();
-        if(fmap[col].sel.has(v))fmap[col].sel.delete(v);
-        else fmap[col].sel.add(v);
-        opt.classList.toggle('sel',fmap[col].sel.has(v));
-        const cb=opt.querySelector('.ms-checkbox');
-        const svge=opt.querySelector('.ms-check-svg');
-        cb.style.background=fmap[col].sel.has(v)?'var(--blue)':'';
-        cb.style.borderColor=fmap[col].sel.has(v)?'var(--blue)':'';
-        svge.style.display=fmap[col].sel.has(v)?'block':'none';
-        setTriggerDisplay(trigger,col);
-        schedFilter();
-      });
-      f.appendChild(opt);
+  /* ── filter & render from scratch ── */
+  function refilter(){
+    const q = state.q.toLowerCase();
+    state.filtered = q ? vals.filter(v => v.toLowerCase().includes(q)) : vals;
+    state.rendered = 0;
+    list.innerHTML = '';
+    countLbl.textContent = state.filtered.length + ' / ' + vals.length;
+    appendBatch();
+  }
+
+  /* ── append next BATCH items to list ── */
+  function appendBatch(){
+    const total = state.filtered.length;
+    if(!total){ list.innerHTML = '<div class="ms-empty">No options found</div>'; return; }
+    const end = Math.min(state.rendered + BATCH, total);
+    const frag = document.createDocumentFragment();
+    for(let i = state.rendered; i < end; i++){
+      frag.appendChild(makeOpt(state.filtered[i]));
+    }
+    list.appendChild(frag);
+    state.rendered = end;
+  }
+
+  /* ── build one option row ── */
+  function makeOpt(v){
+    const isSel = fmap[col].sel.has(v);
+    const opt = document.createElement('div');
+    opt.className = 'ms-opt' + (isSel ? ' sel' : '');
+    opt.dataset.val = v;
+    opt.innerHTML =
+      `<div class="ms-checkbox" style="${isSel?'background:var(--blue);border-color:var(--blue);':''}">` +
+      `<svg class="ms-check-svg" width="9" height="9" fill="none" stroke="#fff" stroke-width="2.5" viewBox="0 0 24 24" style="display:${isSel?'block':'none'}">` +
+      `<polyline points="20 6 9 17 4 12"/></svg></div>` +
+      `<span class="ms-opt-text" title="${esc(v)}">${esc(v)}</span>`;
+    opt.addEventListener('mousedown', e => {
+      e.preventDefault();
+      const nowSel = !fmap[col].sel.has(v);
+      if(nowSel) fmap[col].sel.add(v); else fmap[col].sel.delete(v);
+      opt.classList.toggle('sel', nowSel);
+      const cb = opt.querySelector('.ms-checkbox');
+      const svge = opt.querySelector('.ms-check-svg');
+      cb.style.background = nowSel ? 'var(--blue)' : '';
+      cb.style.borderColor = nowSel ? 'var(--blue)' : '';
+      svge.style.display = nowSel ? 'block' : 'none';
+      setTriggerDisplay(trigger, col);
+      schedFilter();
     });
-    list.innerHTML='';list.appendChild(f);
+    return opt;
   }
 
-  function open(){
-    state.open=true;state.q='';si.value='';
-    panel.classList.add('show');trigger.classList.add('open');
-    renderList();
+  /* ── infinite scroll: load more when near bottom ── */
+  list.addEventListener('scroll', () => {
+    if(state.rendered >= state.filtered.length) return;
+    if(list.scrollTop + list.clientHeight >= list.scrollHeight - 60){
+      appendBatch();
+    }
+  }, {passive:true});
+
+  /* ── open / close ── */
+  function openPanel(){
+    state.open = true; state.q = ''; si.value = '';
+    panel.classList.add('show'); trigger.classList.add('open');
+    refilter();
     setTimeout(()=>{
-      // flip upward if needed
-      const r=panel.getBoundingClientRect();
-      if(r.bottom>window.innerHeight-10){
-        panel.style.top='auto';panel.style.bottom='calc(100% + 3px)';
-      } else {panel.style.top='';panel.style.bottom='';}
+      const r = panel.getBoundingClientRect();
+      if(r.bottom > window.innerHeight - 10){ panel.style.top='auto'; panel.style.bottom='calc(100% + 3px)'; }
+      else { panel.style.top=''; panel.style.bottom=''; }
       si.focus();
-    },0);
+    }, 0);
   }
-  function close(){
-    state.open=false;
-    panel.classList.remove('show');trigger.classList.remove('open');
+  function closePanel(){
+    state.open = false; panel.classList.remove('show'); trigger.classList.remove('open');
   }
 
-  trigger.addEventListener('click',()=>{state.open?close():open();});
-  trigger.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();state.open?close():open();}if(e.key==='Escape')close();});
-  si.addEventListener('input',()=>{state.q=si.value;renderList();});
-  selAll.addEventListener('mousedown',e=>{
-    e.preventDefault();
-    const q=state.q.toLowerCase();
-    (q?vals.filter(v=>v.toLowerCase().includes(q)):vals).forEach(v=>fmap[col].sel.add(v));
-    renderList();setTriggerDisplay(trigger,col);schedFilter();
+  trigger.addEventListener('click', () => state.open ? closePanel() : openPanel());
+  trigger.addEventListener('keydown', e => {
+    if(e.key==='Enter'||e.key===' '){ e.preventDefault(); state.open ? closePanel() : openPanel(); }
+    if(e.key==='Escape') closePanel();
   });
-  clrAll.addEventListener('mousedown',e=>{
-    e.preventDefault();
-    fmap[col].sel.clear();renderList();setTriggerDisplay(trigger,col);schedFilter();
-  });
-  document.addEventListener('click',e=>{if(state.open&&!outer.contains(e.target))close();});
 
-  outer.appendChild(trigger);outer.appendChild(panel);
+  let siT = null;
+  si.addEventListener('input', () => {
+    clearTimeout(siT);
+    siT = setTimeout(() => { state.q = si.value; refilter(); }, 150);
+  });
+
+  selAll.addEventListener('mousedown', e => {
+    e.preventDefault();
+    state.filtered.forEach(v => fmap[col].sel.add(v));
+    // update visible checkboxes in place
+    list.querySelectorAll('.ms-opt').forEach(opt => {
+      if(fmap[col].sel.has(opt.dataset.val)){
+        opt.classList.add('sel');
+        opt.querySelector('.ms-checkbox').style.background='var(--blue)';
+        opt.querySelector('.ms-checkbox').style.borderColor='var(--blue)';
+        opt.querySelector('.ms-check-svg').style.display='block';
+      }
+    });
+    setTriggerDisplay(trigger, col); schedFilter();
+  });
+
+  clrAll.addEventListener('mousedown', e => {
+    e.preventDefault();
+    state.filtered.forEach(v => fmap[col].sel.delete(v));
+    list.querySelectorAll('.ms-opt').forEach(opt => {
+      opt.classList.remove('sel');
+      opt.querySelector('.ms-checkbox').style.background='';
+      opt.querySelector('.ms-checkbox').style.borderColor='';
+      opt.querySelector('.ms-check-svg').style.display='none';
+    });
+    setTriggerDisplay(trigger, col); schedFilter();
+  });
+
+  document.addEventListener('click', e => { if(state.open && !outer.contains(e.target)) closePanel(); });
+
+  outer.appendChild(trigger); outer.appendChild(panel);
   return outer;
 }
 
@@ -1098,8 +1144,7 @@ async function applyFilters(){
   const active=[];
   for(const col of cols){
     const f=fmap[col];if(!f)continue;
-    if(f.mode==='multi'&&f.sel.size>0)active.push({col,mode:'multi',sel:f.sel});
-    else if(f.mode==='text'&&f.txt)active.push({col,mode:'text',txt:f.txt.toLowerCase()});
+    if(f.sel&&f.sel.size>0)active.push({col,sel:f.sel});
   }
   const CHUNK=15000;const result=[];
   for(let i=0;i<raw.length;i+=CHUNK){
@@ -1107,9 +1152,7 @@ async function applyFilters(){
     for(let j=i;j<end;j++){
       const row=raw[j];let ok=true;
       for(const f of active){
-        const cv=String(row[f.col]??'');
-        if(f.mode==='multi'){if(!f.sel.has(cv)){ok=false;break;}}
-        else{if(!cv.toLowerCase().includes(f.txt)){ok=false;break;}}
+        if(!f.sel.has(String(row[f.col]??''))){ok=false;break;}
       }
       if(ok&&gs){
         let found=false;
@@ -1141,10 +1184,7 @@ function updStats(){
 }
 function updBadge(){
   let a=0;
-  for(const f of Object.values(fmap)){
-    if(f.mode==='multi'&&f.sel.size>0)a++;
-    else if(f.mode==='text'&&f.txt)a++;
-  }
+  for(const f of Object.values(fmap)){if(f.sel&&f.sel.size>0)a++;}
   if($('gsearch')?.value)a++;
   const el=$('fbadge');
   el.textContent=a?a+' active':cols.length+' filters';
@@ -1157,11 +1197,10 @@ function renderChips(){
   const gs=$('gsearch')?.value;
   const parts=[];
   for(const [col,f] of Object.entries(fmap)){
-    if(f.mode==='multi'&&f.sel.size>0){
-      const preview=[...f.sel].slice(0,2).join(', ')+(f.sel.size>2?` +${f.sel.size-2}`:'');
+    if(f.sel&&f.sel.size>0){
+      const items=[...f.sel];
+      const preview=items.slice(0,2).join(', ')+(items.length>2?` +${items.length-2}`:'');
       parts.push({label:`${col}: ${preview}`,clear:()=>{f.sel.clear();const t=$('ms_'+col);if(t)setTriggerDisplay(t,col);}});
-    } else if(f.mode==='text'&&f.txt){
-      parts.push({label:`${col}: ${f.txt}`,clear:()=>{f.txt='';const el=$('ft_'+col);if(el){el.value='';el.classList.remove('active');}}});
     }
   }
   if(!parts.length&&!gs){row.style.display='none';return;}
@@ -1244,13 +1283,7 @@ function changePS(v){ps=parseInt(v);pg=1;renderTable();}
 /* ══════════ RESET / CLEAR / EXPORT ══════════ */
 function doReset(){
   for(const [col,f] of Object.entries(fmap)){
-    if(f.mode==='multi'){
-      f.sel.clear();
-      const t=$('ms_'+col);if(t)setTriggerDisplay(t,col);
-    } else {
-      f.txt='';
-      const el=$('ft_'+col);if(el){el.value='';el.classList.remove('active');}
-    }
+    if(f.sel){f.sel.clear();const t=$('ms_'+col);if(t)setTriggerDisplay(t,col);}
   }
   const gs=$('gsearch');if(gs)gs.value='';
   applyFilters();toast('Filters reset','inf');
