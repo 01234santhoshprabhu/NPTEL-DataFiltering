@@ -323,20 +323,17 @@ button{font-family:'Inter',sans-serif;}
 .ms-tag-x:hover{color:#fff;}
 .ms-more{font-size:10.5px;color:var(--text2);white-space:nowrap;flex-shrink:0;}
 
-/* DROPDOWN PANEL */
+/* DROPDOWN PANEL — portaled to body, fixed position */
 .ms-panel{
-  position:absolute;top:calc(100% + 3px);left:0;right:0;
-  background:var(--surface);border:1.5px solid var(--border2);
+  background:var(--surface);
+  border:1.5px solid var(--border2);
   border-radius:var(--r-lg);
-  box-shadow:0 12px 40px rgba(0,0,0,.55),0 0 0 1px rgba(59,130,246,.08);
-  z-index:9999;
-  display:none;flex-direction:column;
-  max-height:280px;overflow:hidden;
-  min-width:200px;
-  animation:panelIn .15s ease;
+  box-shadow:0 16px 48px rgba(0,0,0,.65),0 0 0 1px rgba(59,130,246,.06);
+  flex-direction:column;
+  min-width:220px;
+  animation:panelIn .14s ease;
 }
-.ms-panel.show{display:flex;}
-@keyframes panelIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+@keyframes panelIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
 
 .ms-search-row{
   padding:7px 8px;border-bottom:1px solid var(--border);flex-shrink:0;
@@ -368,7 +365,7 @@ button{font-family:'Inter',sans-serif;}
 }
 .ms-action:hover{border-color:var(--blue);color:var(--blue);background:var(--blue-dim);}
 
-.ms-list{overflow-y:auto;flex:1;max-height:240px;}
+.ms-list{overflow-y:auto;height:220px;flex-shrink:0;}
 .ms-opt{
   display:flex;align-items:center;gap:8px;
   padding:0 10px;cursor:pointer;
@@ -951,23 +948,33 @@ function buildFilterUI(){
   grid.appendChild(frag);
 }
 
-/* ══════════ MULTI-SELECT — CHUNKED INFINITE SCROLL ══════════
-   Renders 80 items at a time, loads more as user scrolls.
-   Works perfectly for 1 → 250,000 unique values.
-══════════════════════════════════════════════════════════════ */
+/* ══════════ MULTI-SELECT — PORTAL DROPDOWN ══════════
+   Panel appends to <body> with fixed positioning.
+   Nothing in the DOM chain can clip it.
+   Infinite scroll loads 80 items at a time.
+═════════════════════════════════════════════════════ */
 const BATCH = 80;
 
 function makeMultiSelect(col, vals){
-  const outer = document.createElement('div'); outer.className = 'ms-outer';
+  const outer = document.createElement('div');
+  outer.className = 'ms-outer';
+  outer.style.position = 'relative';
+
   const state = { open:false, q:'', filtered:vals.slice(), rendered:0 };
 
-  /* Trigger */
+  /* ── Trigger button ── */
   const trigger = document.createElement('div');
-  trigger.className = 'ms-trigger'; trigger.id = 'ms_'+col; trigger.tabIndex = 0;
+  trigger.className = 'ms-trigger';
+  trigger.id = 'ms_'+col;
+  trigger.tabIndex = 0;
   setTriggerDisplay(trigger, col);
+  outer.appendChild(trigger);
 
-  /* Panel */
-  const panel = document.createElement('div'); panel.className = 'ms-panel';
+  /* ── Portal panel — lives in <body> ── */
+  const panel = document.createElement('div');
+  panel.className = 'ms-panel';
+  panel.style.display = 'none';
+  document.body.appendChild(panel);
 
   /* Search */
   const sr = document.createElement('div'); sr.className = 'ms-search-row';
@@ -975,20 +982,41 @@ function makeMultiSelect(col, vals){
   const si = document.createElement('input'); si.className = 'ms-search'; si.placeholder = 'Search options…';
   sr.appendChild(si); panel.appendChild(sr);
 
-  /* Actions + count */
+  /* Actions row */
   const ar = document.createElement('div'); ar.className = 'ms-actions-row';
-  const selAll = document.createElement('button'); selAll.className = 'ms-action'; selAll.textContent = 'All';
-  const clrAll = document.createElement('button'); clrAll.className = 'ms-action'; clrAll.textContent = 'None';
+  const selAll = document.createElement('button'); selAll.className = 'ms-action'; selAll.textContent = 'Select All';
+  const clrAll = document.createElement('button'); clrAll.className = 'ms-action'; clrAll.textContent = 'Clear';
   const countLbl = document.createElement('span');
-  countLbl.style.cssText = 'font-size:10px;color:var(--text3);margin-left:auto;white-space:nowrap;font-family:"JetBrains Mono",monospace;';
+  countLbl.style.cssText = 'font-size:10px;color:var(--text3);margin-left:auto;white-space:nowrap;font-family:"JetBrains Mono",monospace;padding-right:2px;';
   ar.appendChild(selAll); ar.appendChild(clrAll); ar.appendChild(countLbl);
   panel.appendChild(ar);
 
-  /* Scrollable list */
+  /* List */
   const list = document.createElement('div'); list.className = 'ms-list';
   panel.appendChild(list);
 
-  /* ── filter & render from scratch ── */
+  /* ── Position panel below (or above) trigger ── */
+  function positionPanel(){
+    const tr = trigger.getBoundingClientRect();
+    const panelH = 320; // search+actions+list
+    const spaceBelow = window.innerHeight - tr.bottom - 8;
+    const spaceAbove = tr.top - 8;
+
+    panel.style.position = 'fixed';
+    panel.style.left = tr.left + 'px';
+    panel.style.width = Math.max(tr.width, 220) + 'px';
+    panel.style.zIndex = '999999';
+
+    if(spaceBelow >= panelH || spaceBelow >= spaceAbove){
+      panel.style.top = (tr.bottom + 3) + 'px';
+      panel.style.bottom = 'auto';
+    } else {
+      panel.style.bottom = (window.innerHeight - tr.top + 3) + 'px';
+      panel.style.top = 'auto';
+    }
+  }
+
+  /* ── Refilter from scratch ── */
   function refilter(){
     const q = state.q.toLowerCase();
     state.filtered = q ? vals.filter(v => v.toLowerCase().includes(q)) : vals;
@@ -998,20 +1026,18 @@ function makeMultiSelect(col, vals){
     appendBatch();
   }
 
-  /* ── append next BATCH items to list ── */
+  /* ── Append next batch ── */
   function appendBatch(){
     const total = state.filtered.length;
     if(!total){ list.innerHTML = '<div class="ms-empty">No options found</div>'; return; }
     const end = Math.min(state.rendered + BATCH, total);
     const frag = document.createDocumentFragment();
-    for(let i = state.rendered; i < end; i++){
-      frag.appendChild(makeOpt(state.filtered[i]));
-    }
+    for(let i = state.rendered; i < end; i++) frag.appendChild(makeOpt(state.filtered[i]));
     list.appendChild(frag);
     state.rendered = end;
   }
 
-  /* ── build one option row ── */
+  /* ── Build one option row ── */
   function makeOpt(v){
     const isSel = fmap[col].sel.has(v);
     const opt = document.createElement('div');
@@ -1019,7 +1045,7 @@ function makeMultiSelect(col, vals){
     opt.dataset.val = v;
     opt.innerHTML =
       `<div class="ms-checkbox" style="${isSel?'background:var(--blue);border-color:var(--blue);':''}">` +
-      `<svg class="ms-check-svg" width="9" height="9" fill="none" stroke="#fff" stroke-width="2.5" viewBox="0 0 24 24" style="display:${isSel?'block':'none'}">` +
+      `<svg width="9" height="9" fill="none" stroke="#fff" stroke-width="2.5" viewBox="0 0 24 24" style="display:${isSel?'block':'none'}">` +
       `<polyline points="20 6 9 17 4 12"/></svg></div>` +
       `<span class="ms-opt-text" title="${esc(v)}">${esc(v)}</span>`;
     opt.addEventListener('mousedown', e => {
@@ -1028,7 +1054,7 @@ function makeMultiSelect(col, vals){
       if(nowSel) fmap[col].sel.add(v); else fmap[col].sel.delete(v);
       opt.classList.toggle('sel', nowSel);
       const cb = opt.querySelector('.ms-checkbox');
-      const svge = opt.querySelector('.ms-check-svg');
+      const svge = opt.querySelector('svg');
       cb.style.background = nowSel ? 'var(--blue)' : '';
       cb.style.borderColor = nowSel ? 'var(--blue)' : '';
       svge.style.display = nowSel ? 'block' : 'none';
@@ -1038,53 +1064,65 @@ function makeMultiSelect(col, vals){
     return opt;
   }
 
-  /* ── infinite scroll: load more when near bottom ── */
+  /* Infinite scroll */
   list.addEventListener('scroll', () => {
     if(state.rendered >= state.filtered.length) return;
-    if(list.scrollTop + list.clientHeight >= list.scrollHeight - 60){
-      appendBatch();
-    }
+    if(list.scrollTop + list.clientHeight >= list.scrollHeight - 80) appendBatch();
   }, {passive:true});
 
-  /* ── open / close ── */
+  /* Reposition on window scroll/resize */
+  function onScroll(){ if(state.open) positionPanel(); }
+  window.addEventListener('scroll', onScroll, true);
+  window.addEventListener('resize', onScroll);
+
+  /* ── Open ── */
   function openPanel(){
+    // close any other open panels first
+    document.querySelectorAll('.ms-panel').forEach(p => {
+      if(p !== panel && p.style.display !== 'none'){
+        p.style.display = 'none';
+        p._trigger && p._trigger.classList.remove('open');
+      }
+    });
     state.open = true; state.q = ''; si.value = '';
-    panel.classList.add('show'); trigger.classList.add('open');
+    panel.style.display = 'flex';
+    panel._trigger = trigger;
+    trigger.classList.add('open');
+    positionPanel();
     refilter();
-    setTimeout(()=>{
-      const r = panel.getBoundingClientRect();
-      if(r.bottom > window.innerHeight - 10){ panel.style.top='auto'; panel.style.bottom='calc(100% + 3px)'; }
-      else { panel.style.top=''; panel.style.bottom=''; }
-      si.focus();
-    }, 0);
-  }
-  function closePanel(){
-    state.open = false; panel.classList.remove('show'); trigger.classList.remove('open');
+    setTimeout(() => si.focus(), 0);
   }
 
-  trigger.addEventListener('click', () => state.open ? closePanel() : openPanel());
+  /* ── Close ── */
+  function closePanel(){
+    state.open = false;
+    panel.style.display = 'none';
+    trigger.classList.remove('open');
+  }
+
+  trigger.addEventListener('click', e => { e.stopPropagation(); state.open ? closePanel() : openPanel(); });
   trigger.addEventListener('keydown', e => {
     if(e.key==='Enter'||e.key===' '){ e.preventDefault(); state.open ? closePanel() : openPanel(); }
     if(e.key==='Escape') closePanel();
   });
 
+  /* Search debounce */
   let siT = null;
   si.addEventListener('input', () => {
     clearTimeout(siT);
-    siT = setTimeout(() => { state.q = si.value; refilter(); }, 150);
+    siT = setTimeout(() => { state.q = si.value; list.scrollTop = 0; refilter(); }, 150);
   });
 
+  /* Select All / Clear */
   selAll.addEventListener('mousedown', e => {
     e.preventDefault();
     state.filtered.forEach(v => fmap[col].sel.add(v));
-    // update visible checkboxes in place
     list.querySelectorAll('.ms-opt').forEach(opt => {
-      if(fmap[col].sel.has(opt.dataset.val)){
-        opt.classList.add('sel');
-        opt.querySelector('.ms-checkbox').style.background='var(--blue)';
-        opt.querySelector('.ms-checkbox').style.borderColor='var(--blue)';
-        opt.querySelector('.ms-check-svg').style.display='block';
-      }
+      if(!fmap[col].sel.has(opt.dataset.val)) return;
+      opt.classList.add('sel');
+      opt.querySelector('.ms-checkbox').style.background = 'var(--blue)';
+      opt.querySelector('.ms-checkbox').style.borderColor = 'var(--blue)';
+      opt.querySelector('svg').style.display = 'block';
     });
     setTriggerDisplay(trigger, col); schedFilter();
   });
@@ -1094,16 +1132,18 @@ function makeMultiSelect(col, vals){
     state.filtered.forEach(v => fmap[col].sel.delete(v));
     list.querySelectorAll('.ms-opt').forEach(opt => {
       opt.classList.remove('sel');
-      opt.querySelector('.ms-checkbox').style.background='';
-      opt.querySelector('.ms-checkbox').style.borderColor='';
-      opt.querySelector('.ms-check-svg').style.display='none';
+      opt.querySelector('.ms-checkbox').style.background = '';
+      opt.querySelector('.ms-checkbox').style.borderColor = '';
+      opt.querySelector('svg').style.display = 'none';
     });
     setTriggerDisplay(trigger, col); schedFilter();
   });
 
-  document.addEventListener('click', e => { if(state.open && !outer.contains(e.target)) closePanel(); });
+  /* Close on outside click */
+  document.addEventListener('click', e => {
+    if(state.open && !outer.contains(e.target) && !panel.contains(e.target)) closePanel();
+  });
 
-  outer.appendChild(trigger); outer.appendChild(panel);
   return outer;
 }
 
@@ -1290,6 +1330,8 @@ function doReset(){
 }
 function doClear(){
   raw=[];fil=[];cols=[];colSets={};fmap={};sCol=null;sDir=1;
+  // remove all portaled panels from body
+  document.querySelectorAll('.ms-panel').forEach(p=>p.remove());
   $('up-sec').style.display='block';
   $('dash-sec').style.display='none';
   $('stats-row').style.display='none';
